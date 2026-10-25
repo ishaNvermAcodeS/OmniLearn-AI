@@ -3,7 +3,7 @@ backend/.env
 backend/venv/
 backend/__pycache__/
 backend/*.db
-backend/kirigumi.db
+backend/omnilearn.db
 
 # Python cache
 **/__pycache__/

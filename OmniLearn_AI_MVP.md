@@ -1,7 +1,7 @@
-# AI Course Builder – MVP Blueprint
+# OmniLearn AI – MVP Blueprint
 
 ## Project Description
-AI Course Builder is a web application that generates a complete learning course from a user prompt.
+OmniLearn AI is a web application that generates a complete learning course from a user prompt.
 
 ## Target User
 Students or self-learners who want a structured course quickly.

@@ -36,9 +36,9 @@ except ImportError:  # pragma: no cover - optional dependency for file parsing
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "kirigumi.db")
+DB_PATH = os.path.join(BASE_DIR, "omnilearn.db")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-SESSION_COOKIE = "kirigumi_session"
+SESSION_COOKIE = "omnilearn_session"
 SESSION_DAYS = 30
 COOKIE_SECURE_ENV = os.getenv("COOKIE_SECURE", "").strip().lower()
 COOKIE_SAMESITE_ENV = (os.getenv("COOKIE_SAMESITE", "").strip().lower())
@@ -2286,16 +2286,16 @@ class AutonomousTriggerRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "Kirigumi AI Course Builder backend running"}
+    return {"message": "OmniLearn AI backend running"}
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 @app.get("/auth/google")
-def google_auth(kirigumi_session: Optional[str] = Cookie(default=None)):
+def google_auth(omnilearn_session: Optional[str] = Cookie(default=None)):
     require_google_oauth_config()
     try:
-        user = get_current_user(kirigumi_session)
+        user = get_current_user(omnilearn_session)
     except HTTPException as exc:
         if exc.status_code == 401:
             return RedirectResponse(f"{FRONTEND_URL}?classroom=error&reason=auth_required")
@@ -2400,14 +2400,14 @@ def signin(request: AuthRequest, response: Response):
 
 
 @app.get("/auth/me")
-def auth_me(kirigumi_session: Optional[str] = Cookie(default=None)):
-    return {"user": serialize_user(get_current_user(kirigumi_session))}
+def auth_me(omnilearn_session: Optional[str] = Cookie(default=None)):
+    return {"user": serialize_user(get_current_user(omnilearn_session))}
 
 
 @app.post("/auth/logout")
-def logout(response: Response, kirigumi_session: Optional[str] = Cookie(default=None)):
-    if kirigumi_session:
-        th = hashlib.sha256(kirigumi_session.encode()).hexdigest()
+def logout(response: Response, omnilearn_session: Optional[str] = Cookie(default=None)):
+    if omnilearn_session:
+        th = hashlib.sha256(omnilearn_session.encode()).hexdigest()
         conn = get_db()
         db_execute(conn, "DELETE FROM sessions WHERE token_hash = ?", (th,))
         conn.commit()
@@ -2419,8 +2419,8 @@ def logout(response: Response, kirigumi_session: Optional[str] = Cookie(default=
 # ── Profile / Cloud sync ──────────────────────────────────────────────────────
 
 @app.get("/profile/courses")
-def get_saved_courses(kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def get_saved_courses(omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     conn = get_db()
     rows = db_fetchall(
         conn,
@@ -2444,8 +2444,8 @@ def get_saved_courses(kirigumi_session: Optional[str] = Cookie(default=None)):
 
 
 @app.post("/profile/courses")
-def save_course(request: SavedCourseRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def save_course(request: SavedCourseRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     added_at = request.added_at or int(datetime.now().timestamp() * 1000)
     conn = get_db()
     db_execute(
@@ -2470,8 +2470,8 @@ def save_course(request: SavedCourseRequest, kirigumi_session: Optional[str] = C
 
 
 @app.delete("/profile/courses")
-def delete_course(topic: str, level: str, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def delete_course(topic: str, level: str, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     conn = get_db()
     db_execute(conn, "DELETE FROM saved_courses WHERE user_id=? AND topic=? AND level=?", (user["id"], topic.strip(), level.strip()))
     conn.commit(); conn.close()
@@ -2479,8 +2479,8 @@ def delete_course(topic: str, level: str, kirigumi_session: Optional[str] = Cook
 
 
 @app.get("/profile/progress")
-def get_progress(topic: str, level: str, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def get_progress(topic: str, level: str, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     conn = get_db()
     row = db_fetchone(conn, "SELECT completed_lessons_json FROM course_progress WHERE user_id=? AND topic=? AND level=?", (user["id"], topic.strip(), level.strip()))
     conn.close()
@@ -2488,8 +2488,8 @@ def get_progress(topic: str, level: str, kirigumi_session: Optional[str] = Cooki
 
 
 @app.put("/profile/progress")
-def save_progress(request: ProgressRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def save_progress(request: ProgressRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     ts = int(datetime.now().timestamp() * 1000)
     conn = get_db()
@@ -2505,8 +2505,8 @@ def save_progress(request: ProgressRequest, kirigumi_session: Optional[str] = Co
 
 
 @app.get("/profile/test-result")
-def get_test_result(topic: str, level: str, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def get_test_result(topic: str, level: str, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     conn = get_db()
     row = db_fetchone(conn, "SELECT result_json FROM course_test_results WHERE user_id=? AND topic=? AND level=?", (user["id"], topic.strip(), level.strip()))
     conn.close()
@@ -2514,8 +2514,8 @@ def get_test_result(topic: str, level: str, kirigumi_session: Optional[str] = Co
 
 
 @app.put("/profile/test-result")
-def save_test_result(request: TestResultRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def save_test_result(request: TestResultRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     ts = int(datetime.now().timestamp() * 1000)
     conn = get_db()
@@ -2531,8 +2531,8 @@ def save_test_result(request: TestResultRequest, kirigumi_session: Optional[str]
 
 
 @app.post("/update-progress")
-def update_progress(request: UpdateProgressRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def update_progress(request: UpdateProgressRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     progress = save_user_progress_row(user["id"], request.course_topic, request.topic, request.score)
     revision = None
@@ -2561,8 +2561,8 @@ def update_progress(request: UpdateProgressRequest, kirigumi_session: Optional[s
 
 
 @app.post("/get-recommendations")
-def get_recommendations(request: RecommendationRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def get_recommendations(request: RecommendationRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     recommendations = trigger_autonomous_updates(
         user_id=user["id"],
         course_topic=request.course_topic,
@@ -2575,8 +2575,8 @@ def get_recommendations(request: RecommendationRequest, kirigumi_session: Option
 
 
 @app.post("/run-autonomous-triggers")
-def run_autonomous_triggers(request: AutonomousTriggerRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def run_autonomous_triggers(request: AutonomousTriggerRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     recommendations = trigger_autonomous_updates(
         user_id=user["id"],
         course_topic=request.course_topic,
@@ -2592,8 +2592,8 @@ def run_autonomous_triggers(request: AutonomousTriggerRequest, kirigumi_session:
 
 
 @app.get("/classroom-data")
-def get_classroom_data(refresh: bool = Query(default=False), kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def get_classroom_data(refresh: bool = Query(default=False), omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     if refresh and get_classroom_connection_row(user["id"]) and not get_classroom_snapshot(user["id"]).get("is_mock"):
         snapshot = sync_google_classroom_snapshot(user["id"])
@@ -2605,8 +2605,8 @@ def get_classroom_data(refresh: bool = Query(default=False), kirigumi_session: O
 
 
 @app.post("/classroom-data")
-def sync_classroom_data(request: ClassroomDataRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def sync_classroom_data(request: ClassroomDataRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     payload = build_mock_classroom_payload(request.course_topic or "General Studies")
     # This endpoint only ever stores generated mock data, so never label it as a live connection.
@@ -2618,31 +2618,31 @@ def sync_classroom_data(request: ClassroomDataRequest, kirigumi_session: Optiona
 
 
 @app.get("/classroom/courses")
-def classroom_courses(kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_courses(omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     snapshot = sync_google_classroom_snapshot(user["id"])
     return {"courses": snapshot.get("courses", []), "notifications": snapshot.get("notifications", {})}
 
 
 @app.get("/classroom/coursework/{course_id}")
-def classroom_coursework(course_id: str, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_coursework(course_id: str, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     coursework = fetch_google_classroom_coursework(user["id"], course_id)
     return {"course_id": course_id, "coursework": coursework, "notifications": build_classroom_notifications(coursework)}
 
 
 @app.get("/classroom/announcements/{course_id}")
-def classroom_announcements(course_id: str, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_announcements(course_id: str, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     return {"course_id": course_id, "announcements": fetch_google_classroom_announcements(user["id"], course_id)}
 
 
 @app.post("/classroom/analyze")
-def classroom_analyze(request: ClassroomAnalyzeRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_analyze(request: ClassroomAnalyzeRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     snapshot = sync_google_classroom_snapshot(user["id"])
     courses = snapshot.get("courses", [])
@@ -2679,8 +2679,8 @@ Notifications:
 
 
 @app.post("/classroom/materials/analyze")
-def classroom_material_analyze(request: ClassroomMaterialAnalyzeRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_material_analyze(request: ClassroomMaterialAnalyzeRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     course_id = safe_topic(request.course_id)
     item_id = safe_topic(request.item_id)
@@ -2762,8 +2762,8 @@ Document text:
 
 
 @app.post("/classroom/materials/workspace")
-def classroom_material_workspace(request: ClassroomMaterialWorkspaceRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_material_workspace(request: ClassroomMaterialWorkspaceRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     course_id = safe_topic(request.course_id)
     item_id = safe_topic(request.item_id)
@@ -2814,8 +2814,8 @@ def classroom_material_workspace(request: ClassroomMaterialWorkspaceRequest, kir
 
 
 @app.post("/classroom/materials/lesson")
-def classroom_material_lesson(request: ClassroomMaterialLessonRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_material_lesson(request: ClassroomMaterialLessonRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     level = request.level if request.level in difficulty_guide else "Intermediate"
     material_doc = load_classroom_material_document(
@@ -2838,8 +2838,8 @@ def classroom_material_lesson(request: ClassroomMaterialLessonRequest, kirigumi_
 
 
 @app.post("/classroom/materials/solve")
-def classroom_material_solve(request: ClassroomMaterialSolveRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user(kirigumi_session)
+def classroom_material_solve(request: ClassroomMaterialSolveRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user(omnilearn_session)
     touch_learner_activity(user["id"])
     level = request.level if request.level in difficulty_guide else "Intermediate"
     material_doc = load_classroom_material_document(
@@ -2866,13 +2866,13 @@ def classroom_material_solve(request: ClassroomMaterialSolveRequest, kirigumi_se
 # ── Course generation ─────────────────────────────────────────────────────────
 
 @app.post("/generate-course")
-def generate_course(request: CourseRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
+def generate_course(request: CourseRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
     goal = request.goal if request.goal in goal_guide else "Deep Learning"
     level = normalize_level(request.level)
     if not safe_topic(request.topic):
         raise HTTPException(status_code=400, detail="Please enter a topic.")
     classroom_context = ""
-    user = get_current_user_optional(kirigumi_session)
+    user = get_current_user_optional(omnilearn_session)
     if user and request.use_classroom_data:
         classroom = get_classroom_snapshot(user["id"])
         alerts = build_classroom_alerts(classroom.get("assignments", []))
@@ -3117,8 +3117,8 @@ Rules:
 
 
 @app.post("/exam-mode")
-def exam_mode(request: ExamModeRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
-    user = get_current_user_optional(kirigumi_session)
+def exam_mode(request: ExamModeRequest, omnilearn_session: Optional[str] = Cookie(default=None)):
+    user = get_current_user_optional(omnilearn_session)
     topic_list = [safe_topic(item) for item in (request.all_topics or []) if safe_topic(item)]
     if user:
         touch_learner_activity(user["id"])
