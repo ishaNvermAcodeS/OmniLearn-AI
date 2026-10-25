@@ -1,7 +1,9 @@
 from googleapiclient.discovery import build
+import html
 import os
 from dotenv import load_dotenv
 from groq import Groq
+from services.llm_config import groq_model_kwargs
 
 load_dotenv()
 
@@ -33,7 +35,7 @@ def search_youtube_videos(topic, level, max_results=12):
         "Advanced": "advanced lecture deep dive"
     }
 
-    query = f"{topic} {level_keywords[level]} english"
+    query = f"{topic} {level_keywords.get(level, level_keywords['Intermediate'])} english"
 
     request = youtube.search().list(
         part="snippet",
@@ -52,16 +54,20 @@ def search_youtube_videos(topic, level, max_results=12):
 
     videos = []
 
-    for item in response["items"]:
-        title = item["snippet"]["title"]
-        channel = item["snippet"]["channelTitle"]
-        description = item["snippet"].get("description", "")
+    for item in response.get("items", []):
+        video_id = item.get("id", {}).get("videoId")
+        if not video_id:
+            continue
+        # The Data API returns HTML-escaped text (e.g. "&#39;" and "&amp;").
+        title = html.unescape(item["snippet"]["title"])
+        channel = html.unescape(item["snippet"]["channelTitle"])
+        description = html.unescape(item["snippet"].get("description", ""))
         if not is_probably_english(f"{title} {channel} {description}"):
             continue
         videos.append({
             "title": title,
             "channel": channel,
-            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
+            "url": f"https://www.youtube.com/watch?v={video_id}"
         })
 
     return rank_videos_with_ai(topic, level, videos)
@@ -97,10 +103,10 @@ Return ONLY the titles exactly as written.
 
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            **groq_model_kwargs(),
             messages=[{"role": "user", "content": prompt}]
         )
-        selected_titles = completion.choices[0].message.content
+        selected_titles = completion.choices[0].message.content or ""
     except Exception:
         return videos[:3]
 

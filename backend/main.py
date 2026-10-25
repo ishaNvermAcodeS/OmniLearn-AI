@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
 from groq import Groq
+from services.llm_config import groq_model_kwargs
 from services.youtube_service import search_youtube_videos
 import hashlib
 import html
@@ -16,7 +17,7 @@ import re
 import requests
 import secrets
 import sqlite3
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 try:
     import psycopg
     from psycopg.rows import dict_row
@@ -178,6 +179,7 @@ def init_db():
     if uses_postgres():
         if postgres_table_exists(conn, "users"):
             ensure_classroom_connection_columns(conn)
+            ensure_saved_course_columns(conn)
             conn.commit()
             conn.close()
             return
@@ -207,6 +209,7 @@ def init_db():
                 level TEXT NOT NULL,
                 course_title TEXT NOT NULL,
                 all_topics_json TEXT NOT NULL,
+                course_json TEXT NOT NULL DEFAULT '',
                 added_at BIGINT NOT NULL,
                 PRIMARY KEY (user_id, topic, level)
             )
@@ -327,6 +330,7 @@ def init_db():
                 level TEXT NOT NULL,
                 course_title TEXT NOT NULL,
                 all_topics_json TEXT NOT NULL,
+                course_json TEXT NOT NULL DEFAULT '',
                 added_at INTEGER NOT NULL,
                 PRIMARY KEY (user_id, topic, level),
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
@@ -422,6 +426,8 @@ def init_db():
         )
     conn.commit()
     ensure_classroom_connection_columns(conn)
+    ensure_saved_course_columns(conn)
+    conn.commit()
     conn.close()
 
 
@@ -448,6 +454,22 @@ def ensure_classroom_connection_columns(conn):
         if column_name in existing:
             continue
         db_execute(conn, f"ALTER TABLE classroom_connections ADD COLUMN {column_name} {definition}")
+
+
+def ensure_saved_course_columns(conn):
+    if uses_postgres():
+        info = db_fetchall(
+            conn,
+            """SELECT column_name
+               FROM information_schema.columns
+               WHERE table_name = 'saved_courses'""",
+        )
+        existing = {row["column_name"] for row in info}
+    else:
+        info = db_fetchall(conn, "PRAGMA table_info(saved_courses)")
+        existing = {row["name"] for row in info}
+    if existing and "course_json" not in existing:
+        db_execute(conn, "ALTER TABLE saved_courses ADD COLUMN course_json TEXT NOT NULL DEFAULT ''")
 
 
 init_db()
@@ -495,13 +517,35 @@ def mastery_bucket(score: float) -> str:
     return "strong"
 
 
-def parse_dt(value: Optional[str]) -> Optional[datetime]:
+def parse_dt(value) -> Optional[datetime]:
     if not value:
         return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    # Postgres timestamptz columns come back as datetimes; naive values are treated as UTC
+    # so comparisons against utc_now() never raise.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def load_json_value(value, default):
+    # jsonb columns (Supabase schema) are returned already decoded; TEXT columns are not.
+    if value is None or value == "":
+        return default
+    if isinstance(value, (dict, list)):
+        return value
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def normalize_level(level: Optional[str]) -> str:
+    return level if level in difficulty_guide else "Intermediate"
 
 
 def require_google_oauth_config():
@@ -539,8 +583,13 @@ def build_google_due_at(due_date: Optional[dict], due_time: Optional[dict]) -> O
     day = due_date.get("day")
     if not year or not month or not day:
         return None
-    hour = (due_time or {}).get("hours", 23)
-    minute = (due_time or {}).get("minutes", 59)
+    # Google omits zero-valued fields, so a dueTime of {"hours": 10} means 10:00.
+    # Only a missing dueTime entirely should fall back to end of day.
+    if due_time:
+        hour = due_time.get("hours", 0)
+        minute = due_time.get("minutes", 0)
+    else:
+        hour, minute = 23, 59
     dt = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
     return dt.isoformat()
 
@@ -590,22 +639,29 @@ def decode_text_bytes(data: bytes) -> str:
 def extract_text_from_pdf_bytes(data: bytes) -> str:
     if PdfReader is None:
         raise HTTPException(status_code=500, detail="PDF parsing is unavailable. Install pypdf in the backend environment.")
-    reader = PdfReader(BytesIO(data))
-    pages = [page.extract_text() or "" for page in reader.pages]
+    try:
+        reader = PdfReader(BytesIO(data))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except Exception as exc:
+        raise HTTPException(status_code=415, detail=f"Could not read this PDF: {exc}") from exc
     return "\n".join(page.strip() for page in pages if page.strip())
 
 
 def extract_text_from_docx_bytes(data: bytes) -> str:
     if DocxDocument is None:
         raise HTTPException(status_code=500, detail="DOCX parsing is unavailable. Install python-docx in the backend environment.")
-    document = DocxDocument(BytesIO(data))
+    try:
+        document = DocxDocument(BytesIO(data))
+    except Exception as exc:
+        raise HTTPException(status_code=415, detail=f"Could not read this DOCX file: {exc}") from exc
     parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
     return "\n".join(parts)
 
 
 def extract_text_from_file_bytes(data: bytes, mime_type: str = "", file_name: str = "") -> str:
     lower_name = (file_name or "").lower()
-    mime = (mime_type or "").lower()
+    # Drop parameters such as "; charset=utf-8" from Content-Type headers.
+    mime = (mime_type or "").split(";", 1)[0].strip().lower()
     if mime == "application/pdf" or lower_name.endswith(".pdf"):
         return extract_text_from_pdf_bytes(data)
     if (
@@ -629,14 +685,17 @@ def call_llm(prompt: str, max_tokens: Optional[int] = None, messages: Optional[l
     if client is None:
         raise HTTPException(status_code=500, detail="Groq API key is missing. Set GROQ_API_KEY in backend/.env.")
     payload = messages if messages is not None else [{"role": "user", "content": prompt}]
-    kwargs = {"model": "llama-3.3-70b-versatile", "messages": payload}
+    kwargs = {**groq_model_kwargs(), "messages": payload}
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     try:
         completion = client.chat.completions.create(**kwargs)
-        return completion.choices[0].message.content.strip()
+        content = (completion.choices[0].message.content or "").strip()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}") from exc
+    if not content:
+        raise HTTPException(status_code=502, detail="LLM returned an empty response. Please try again.")
+    return content
 
 
 def classify_course_type(topic: str, all_topics: list) -> str:
@@ -680,6 +739,7 @@ The remaining questions may be conceptual/analytical.
 
 
 def build_lesson_prompt(topic: str, module: str, level: str, goal: str = "Deep Learning") -> str:
+    level = normalize_level(level)
     course_type = classify_course_type(topic, [module])
     numerical_note = ""
     if course_type == "quantitative":
@@ -755,7 +815,10 @@ def parse_json_array(raw: str) -> list:
     except json.JSONDecodeError:
         match = re.search(r"\[[\s\S]*\]", cleaned)
         if match:
-            parsed = json.loads(match.group(0))
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                parsed = None
             if isinstance(parsed, list):
                 return parsed
     raise HTTPException(status_code=502, detail="Model returned invalid JSON array.")
@@ -1392,7 +1455,9 @@ def normalize_classroom_materials(materials: Optional[list]) -> list:
 
 
 def download_drive_material_bytes(user_id: int, material: dict):
-    drive_file_id = (material or {}).get("drive_file_id") or (material or {}).get("id")
+    # Links, YouTube videos and forms use their URL as "id", so never fall back to it
+    # as a Drive file id.
+    drive_file_id = (material or {}).get("drive_file_id")
     if not drive_file_id:
         raise HTTPException(status_code=400, detail="This material cannot be downloaded for analysis.")
     mime_type = (material or {}).get("mime_type") or ""
@@ -1449,7 +1514,9 @@ def load_classroom_material_document(user_id: int, course_id: str, item_id: str,
             DOCUMENT_TEXT_LIMIT,
         )
     except HTTPException as exc:
-        if exc.status_code in {400, 415}:
+        # 403/404 come from Drive when the file is private or download is disabled;
+        # fall back to analysing the item's title and description instead of failing.
+        if exc.status_code in {400, 403, 404, 415}:
             extraction_notice = exc.detail
         else:
             raise
@@ -1656,7 +1723,14 @@ def sync_google_classroom_snapshot(user_id: int):
     courses = fetch_google_classroom_courses(user_id)
     assignments = []
     for course in courses:
-        coursework = fetch_google_classroom_coursework(user_id, course["id"])
+        try:
+            coursework = fetch_google_classroom_coursework(user_id, course["id"])
+        except HTTPException as exc:
+            # One course without coursework access (e.g. a teacher-only course) should not
+            # break syncing for every other course.
+            if exc.status_code in {403, 404}:
+                continue
+            raise
         for work in coursework:
             assignments.append({
                 "id": work["id"],
@@ -1724,11 +1798,14 @@ def get_classroom_snapshot(user_id: int):
     ]
     assignment_items = []
     for row in assignments:
-        due_at = row["due_at"]
-        due_dt = parse_dt(due_at)
+        due_dt = parse_dt(row["due_at"])
+        due_at = due_dt.isoformat() if due_dt else None
         days_until_due = None
         if due_dt:
             days_until_due = max(0, int((due_dt - utc_now()).total_seconds() // 86400))
+        raw = load_json_value(row["raw_json"], {})
+        if not isinstance(raw, dict):
+            raw = {}
         assignment_items.append(
             {
                 "id": row["assignment_id"],
@@ -1738,9 +1815,9 @@ def get_classroom_snapshot(user_id: int):
                 "topic_hint": row["topic_hint"],
                 "due_at": due_at,
                 "days_until_due": days_until_due,
-                "raw": json.loads(row["raw_json"]),
-                "description": (json.loads(row["raw_json"]) if row["raw_json"] else {}).get("description", ""),
-                "materials": normalize_classroom_materials((json.loads(row["raw_json"]) if row["raw_json"] else {}).get("materials")),
+                "raw": raw,
+                "description": raw.get("description", ""),
+                "materials": raw.get("materials") or [],
                 "updated_at": row["updated_at"],
             }
         )
@@ -1757,18 +1834,24 @@ def get_classroom_snapshot(user_id: int):
 
 def build_classroom_alerts(assignments: list):
     alerts = []
+    now = utc_now()
     for item in assignments:
         days = item.get("days_until_due")
         if days is None or days > CLASSROOM_DEADLINE_WINDOW_DAYS:
             continue
+        due_dt = parse_dt(item.get("due_at"))
+        # days_until_due is clamped to 0, so overdue work would otherwise read as "due in 0 days".
+        if due_dt and due_dt < now:
+            continue
         title = item.get("title") or "Assignment"
         topic_hint = item.get("topic_hint") or item.get("course_name") or "this topic"
+        due_phrase = "today" if days == 0 else f'in {days} day{"s" if days != 1 else ""}'
         alerts.append(
             {
                 "assignment": title,
                 "topic_hint": topic_hint,
                 "days_until_due": days,
-                "message": f'Assignment deadline approaching. "{title}" is due in {days} day{"s" if days != 1 else ""}. Focus on {topic_hint}.',
+                "message": f'Assignment deadline approaching. "{title}" is due {due_phrase}. Focus on {topic_hint}.',
             }
         )
     return alerts
@@ -2098,6 +2181,7 @@ class SavedCourseRequest(BaseModel):
     course_title: str
     all_topics: list
     added_at: Optional[int] = None
+    course_data: Optional[dict] = None
 
 class ProgressRequest(BaseModel):
     topic: str
@@ -2234,14 +2318,26 @@ def google_auth(kirigumi_session: Optional[str] = Cookie(default=None)):
     return RedirectResponse(auth_url)
 
 
+def classroom_error_redirect(reason: str) -> RedirectResponse:
+    return RedirectResponse(f"{FRONTEND_URL}?{urlencode({'classroom': 'error', 'reason': reason})}")
+
+
 @app.get("/auth/callback")
 def google_auth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    # This endpoint is hit by a browser redirect from Google, so failures must send the user
+    # back to the app rather than leaving them on a raw JSON error page.
     if error:
-        return RedirectResponse(f"{FRONTEND_URL}?classroom=error&reason={error}")
+        return classroom_error_redirect(error)
     if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing Google OAuth code or state.")
-    user_id = consume_google_oauth_state(state)
-    token_data = exchange_google_code_for_tokens(code)
+        return classroom_error_redirect("missing_code")
+    try:
+        user_id = consume_google_oauth_state(state)
+    except HTTPException:
+        return classroom_error_redirect("invalid_state")
+    try:
+        token_data = exchange_google_code_for_tokens(code)
+    except HTTPException:
+        return classroom_error_redirect("token_exchange_failed")
     expires_at = utc_now() + timedelta(seconds=int(token_data.get("expires_in", 3600)))
     save_classroom_connection_tokens(
         user_id,
@@ -2251,7 +2347,12 @@ def google_auth_callback(code: Optional[str] = None, state: Optional[str] = None
         scope=token_data.get("scope", ""),
         is_mock=False,
     )
-    sync_google_classroom_snapshot(user_id)
+    try:
+        sync_google_classroom_snapshot(user_id)
+    except HTTPException:
+        # Tokens are saved, so the account is connected; the frontend re-syncs on
+        # ?classroom=connected and shows a "connected, but sync failed" message if it fails again.
+        pass
     return RedirectResponse(f"{FRONTEND_URL}?classroom=connected")
 
 @app.post("/auth/signup")
@@ -2323,11 +2424,23 @@ def get_saved_courses(kirigumi_session: Optional[str] = Cookie(default=None)):
     conn = get_db()
     rows = db_fetchall(
         conn,
-        "SELECT topic, level, course_title, all_topics_json, added_at FROM saved_courses WHERE user_id = ? ORDER BY added_at DESC",
+        "SELECT topic, level, course_title, all_topics_json, course_json, added_at FROM saved_courses WHERE user_id = ? ORDER BY added_at DESC",
         (user["id"],),
     )
     conn.close()
-    return {"courses": [{"topic": r["topic"], "level": r["level"], "courseTitle": r["course_title"], "allTopics": json.loads(r["all_topics_json"]), "addedAt": r["added_at"]} for r in rows]}
+    return {
+        "courses": [
+            {
+                "topic": r["topic"],
+                "level": r["level"],
+                "courseTitle": r["course_title"],
+                "allTopics": load_json_value(r["all_topics_json"], []),
+                "courseData": load_json_value(r["course_json"], None),
+                "addedAt": r["added_at"],
+            }
+            for r in rows
+        ]
+    }
 
 
 @app.post("/profile/courses")
@@ -2337,11 +2450,20 @@ def save_course(request: SavedCourseRequest, kirigumi_session: Optional[str] = C
     conn = get_db()
     db_execute(
         conn,
-        """INSERT INTO saved_courses (user_id, topic, level, course_title, all_topics_json, added_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO saved_courses (user_id, topic, level, course_title, all_topics_json, course_json, added_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, topic, level) DO UPDATE SET
-               course_title=excluded.course_title, all_topics_json=excluded.all_topics_json, added_at=excluded.added_at""",
-        (user["id"], request.topic.strip(), request.level.strip(), request.course_title.strip(), json.dumps(request.all_topics), added_at),
+               course_title=excluded.course_title, all_topics_json=excluded.all_topics_json,
+               course_json=excluded.course_json, added_at=excluded.added_at""",
+        (
+            user["id"],
+            request.topic.strip(),
+            request.level.strip(),
+            request.course_title.strip(),
+            json.dumps(request.all_topics),
+            json.dumps(request.course_data) if request.course_data else "",
+            added_at,
+        ),
     )
     conn.commit(); conn.close()
     return {"ok": True}
@@ -2487,7 +2609,8 @@ def sync_classroom_data(request: ClassroomDataRequest, kirigumi_session: Optiona
     user = get_current_user(kirigumi_session)
     touch_learner_activity(user["id"])
     payload = build_mock_classroom_payload(request.course_topic or "General Studies")
-    store_classroom_payload(user["id"], payload, is_mock=bool(request.use_mock))
+    # This endpoint only ever stores generated mock data, so never label it as a live connection.
+    store_classroom_payload(user["id"], payload, is_mock=True)
     snapshot = get_classroom_snapshot(user["id"])
     snapshot["alerts"] = build_classroom_alerts(snapshot.get("assignments", []))
     snapshot["notifications"] = build_classroom_notifications(snapshot.get("assignments", []))
@@ -2745,6 +2868,9 @@ def classroom_material_solve(request: ClassroomMaterialSolveRequest, kirigumi_se
 @app.post("/generate-course")
 def generate_course(request: CourseRequest, kirigumi_session: Optional[str] = Cookie(default=None)):
     goal = request.goal if request.goal in goal_guide else "Deep Learning"
+    level = normalize_level(request.level)
+    if not safe_topic(request.topic):
+        raise HTTPException(status_code=400, detail="Please enter a topic.")
     classroom_context = ""
     user = get_current_user_optional(kirigumi_session)
     if user and request.use_classroom_data:
@@ -2754,7 +2880,7 @@ def generate_course(request: CourseRequest, kirigumi_session: Optional[str] = Co
             classroom_context = "\nUpcoming classroom priorities:\n" + "\n".join(
                 f"- {item['message']}" for item in alerts[:3]
             )
-    course = generate_course_outline(request.topic, request.level, goal, classroom_context)
+    course = generate_course_outline(request.topic, level, goal, classroom_context)
     if user:
         recommendations = build_recommendations_payload(
             user_id=user["id"],
@@ -2863,14 +2989,25 @@ def generate_explanation(request: ExplanationRequest):
 @app.post("/generate-adaptive-report")
 def generate_adaptive_report(request: AdaptiveReportRequest):
     pct = round((request.score / max(request.total, 1)) * 100)
-    wrong_summary = "\n".join([f"Q{i['idx']+1}: \"{i['question']}\" — chose {i['userAnswer']}, correct was {i['correctAnswer']}) {i['correctText']}" for i in request.wrong_items]) if request.wrong_items else "All correct!"
+    wrong_lines = []
+    for position, item in enumerate(request.wrong_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        number = item["idx"] + 1 if isinstance(item.get("idx"), int) else position
+        wrong_lines.append(
+            f"Q{number}: \"{item.get('question', '')}\" — chose {item.get('userAnswer', '?')}, "
+            f"correct was {item.get('correctAnswer', '?')}) {item.get('correctText', '')}"
+        )
+    # Built outside the f-string below: backslashes inside f-string expressions are a
+    # SyntaxError before Python 3.12.
+    wrong_block = ("Wrong:\n" + "\n".join(wrong_lines)) if wrong_lines else "All correct!"
     course_type = classify_course_type(request.course_topic, request.all_topics)
     num = "\nNote: quantitative course — identify conceptual vs computational errors." if course_type == "quantitative" else ""
     prompt = f"""Adaptive learning coach. Analyze quiz performance.
 
 Course: {request.course_topic} | Lesson: {request.module_name} | Level: {request.level}{num}
 Score: {request.score}/{request.total} ({pct}%)
-{"Wrong:\n" + wrong_summary if request.wrong_items else "All correct!"}
+{wrong_block}
 Available topics: {", ".join(request.all_topics[:20])}
 
 Write using EXACT labels:
@@ -3144,7 +3281,11 @@ Rules:
 - Never refuse to explain a topic"""
     msgs = [{"role": "system", "content": system_prompt}]
     for m in request.messages[-20:]:
-        msgs.append({"role": m.role, "content": m.content})
+        # Only pass conversational roles through; anything else (e.g. a client-sent
+        # "system" message) is treated as user text.
+        role = m.role if m.role in {"user", "assistant"} else "user"
+        if m.content.strip():
+            msgs.append({"role": role, "content": m.content})
     return {"reply": call_llm("", max_tokens=1000, messages=msgs)}
 
 
@@ -3169,11 +3310,6 @@ def get_web_resources_payload(topic: str, level: str):
     last_error = None
 
     for query in queries:
-        try:
-            from urllib.parse import urlparse
-        except Exception:
-            urlparse = None
-
         try:
             resp = requests.post(
                 "https://api.tavily.com/search",
@@ -3212,12 +3348,10 @@ def get_web_resources_payload(topic: str, level: str):
             if not title or not url or url in seen_urls:
                 continue
 
-            domain = ""
-            if urlparse is not None:
-                try:
-                    domain = urlparse(url).netloc.lower().replace("www.", "")
-                except Exception:
-                    domain = ""
+            try:
+                domain = urlparse(url).netloc.lower().removeprefix("www.")
+            except ValueError:
+                domain = ""
             if domain in VIDEO_HOST_BLOCKLIST:
                 continue
 
