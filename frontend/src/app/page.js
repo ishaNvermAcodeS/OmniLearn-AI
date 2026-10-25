@@ -1801,7 +1801,10 @@ function HeroInput({ topic, setTopic, level, setLevel, goal, setGoal, useClassro
       <div className="hero-center">
         <div className="hero-shell hero-float hero-float-2">
           <div className="hero-badge">Adaptive AI Learning System</div>
-          <h1 className="hero-title hero-brand-title">OmniLearn AI</h1>
+          <h1 className="hero-title hero-brand-title" aria-label="OmniLearn AI">
+            <span className="hbt-main" aria-hidden="true">OmniLearn</span>
+            <span className="hbt-tag" aria-hidden="true">AI</span>
+          </h1>
           <p className="hero-sub">
             Build a course, track mastery, and let the system recommend what to study next based on performance, behavior, and deadlines.
           </p>
@@ -3349,7 +3352,7 @@ export default function Home() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&family=DM+Serif+Display:ital@0;1&family=Kalam:wght@400;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&family=DM+Serif+Display:ital@0;1&family=Kalam:wght@400;600;700&family=Cinzel:wght@600;700;800&display=swap');
         *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
         /* ══ THEME VARIABLES ══ */
@@ -3694,19 +3697,87 @@ export default function Home() {
           color: var(--text);
           margin-bottom: 16px;
         }
+        /* ── Hero brand title: film-poster lockup ── */
         .hero-brand-title {
-          font-size: clamp(3.1rem, 9vw, 6.2rem);
-          letter-spacing: .04em;
-          color: var(--orange);
-          font-weight: 850;
-          text-shadow: 0 14px 34px rgba(249,115,22,.14);
+          --hbt-fill: linear-gradient(178deg, #ffb066 0%, #f97316 40%, #dc5a12 62%, #9a3412 100%);
+          --hbt-glint: rgba(255,255,255,.75);
+          --hbt-shadow: drop-shadow(0 1px 0 rgba(255,255,255,.7)) drop-shadow(0 16px 26px rgba(194,65,12,.22));
+          --hbt-tag: #9a3412;
+          --hbt-rule: rgba(154,52,18,.45);
+          --hbt-reveal-spacing: .32em;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: clamp(6px, 1.2vw, 12px);
+          margin-bottom: 22px;
+          line-height: 1;
+          letter-spacing: 0;
         }
         body.dark-mode .hero-brand-title {
+          --hbt-fill: linear-gradient(178deg, #fff7ed 0%, #fed7aa 28%, #fb923c 60%, #ea580c 100%);
+          --hbt-glint: rgba(255,255,255,.9);
+          --hbt-shadow: drop-shadow(0 0 22px rgba(249,115,22,.32)) drop-shadow(0 14px 34px rgba(0,0,0,.55));
+          --hbt-tag: #fdba74;
+          --hbt-rule: rgba(253,186,116,.5);
+        }
+        .hbt-main {
+          display: block;
+          font-family: 'Cinzel', var(--ff-chapter);
+          font-weight: 700;
+          font-size: clamp(2.7rem, 12.5vw, 7rem);
+          line-height: .95;
+          letter-spacing: .03em;
+          padding: .06em .04em .1em;
           color: transparent;
-          background: linear-gradient(135deg, var(--orange), var(--accent), #22d3ee);
+          background-image: linear-gradient(105deg, transparent 42%, var(--hbt-glint) 50%, transparent 58%), var(--hbt-fill);
+          background-size: 260% 100%, 100% 100%;
+          background-position: 160% 0, 0 0;
+          background-repeat: no-repeat;
           -webkit-background-clip: text;
           background-clip: text;
-          text-shadow: 0 14px 34px rgba(8,145,178,.12);
+          filter: var(--hbt-shadow);
+          animation:
+            hbtReveal 1.5s cubic-bezier(.16,1,.3,1) .2s both,
+            hbtGlint 1.6s ease-in-out 1.5s both;
+        }
+        .hbt-tag {
+          display: inline-flex;
+          align-items: center;
+          gap: clamp(12px, 2vw, 20px);
+          font-family: 'Cinzel', var(--ff-chapter);
+          font-weight: 700;
+          font-size: clamp(.8rem, 1.7vw, 1.1rem);
+          letter-spacing: .9em;
+          color: var(--hbt-tag);
+          animation: hbtTagIn 1s ease-out 1s both;
+        }
+        .hbt-tag::before,
+        .hbt-tag::after {
+          content: "";
+          width: clamp(36px, 9vw, 96px);
+          height: 1px;
+        }
+        .hbt-tag::before { background: linear-gradient(90deg, transparent, var(--hbt-rule)); }
+        /* cancels the letter-spacing after "I" so both rules sit the same distance from the text */
+        .hbt-tag::after { background: linear-gradient(90deg, var(--hbt-rule), transparent); margin-left: -.9em; }
+        @keyframes hbtReveal {
+          from { opacity: 0; letter-spacing: var(--hbt-reveal-spacing); transform: scale(1.04); }
+          to { opacity: 1; letter-spacing: .03em; transform: scale(1); }
+        }
+        @keyframes hbtGlint {
+          from { background-position: 160% 0, 0 0; }
+          to { background-position: -60% 0, 0 0; }
+        }
+        @keyframes hbtTagIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @media (max-width: 768px) {
+          /* the wide opening frame would overflow narrow screens */
+          .hero-brand-title { --hbt-reveal-spacing: .12em; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .hbt-main, .hbt-tag { animation: none; }
         }
         .hero-sub {
           font-size: 1rem;
